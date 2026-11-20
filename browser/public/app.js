@@ -4,7 +4,6 @@ const launchForm = document.querySelector('#launch-form');
 const startButton = document.querySelector('#start-button');
 const showMaster = document.querySelector('#show-master');
 const stopButton = document.querySelector('#stop-button');
-const backgroundMode = document.querySelector('#background-mode');
 const countInput = document.querySelector('#session-count');
 const urlInput = document.querySelector('#target-url');
 urlInput.value = new URL('/test', window.location.origin).href;
@@ -65,7 +64,7 @@ function escapeHtml(value) {
 function renderSessions(sessions) {
   const rows = document.querySelector('#session-rows');
   if (!sessions.length) {
-    rows.innerHTML = '<tr class="empty-row"><td colspan="4">No browser sessions running. Start with five sessions to try the local test page.</td></tr>';
+    rows.innerHTML = '<tr class="empty-row"><td colspan="4">No sessions running.</td></tr>';
     return;
   }
   rows.innerHTML = sessions.map((session, index) => {
@@ -112,10 +111,8 @@ function renderStatus(status) {
   startButton.disabled = status.refreshing || status.sessions.some((session) => session.status === 'starting');
   stopButton.disabled = !status.browserRunning;
   showMaster.hidden = status.headless || status.sessions[0]?.status !== 'active';
-  backgroundMode.disabled = status.browserRunning;
-  if (status.browserRunning) backgroundMode.checked = status.headless;
   document.querySelector('#session-display').textContent = status.refreshing ? 'Refreshing tabs · clicker paused' : status.browserRunning
-    ? (status.headless ? 'Running in the background' : 'Master window visible · followers in background')
+    ? (status.headless ? 'Running in the background' : 'Followers in background')
     : '';
 }
 
@@ -132,7 +129,7 @@ launchForm.addEventListener('submit', async (event) => {
   }
   authorizationExplanation.classList.remove('blocked');
   try {
-    await api('/api/start', { url: urlInput.value, count, authorized, background: backgroundMode.checked });
+    await api('/api/start', { url: urlInput.value, count, authorized });
     showToast(`Starting up to ${count} session${count === 1 ? '' : 's'}…`);
   } catch (error) {
     if (!local) {

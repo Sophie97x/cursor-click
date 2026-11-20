@@ -16,16 +16,15 @@
     <main>
       <section class="intro">
         <div>
-          <p class="eyebrow">PLAYWRIGHT SESSION MANAGER</p>
-          <h1>One browser. <span>Independent sessions.</span></h1>
-          <p class="intro-copy">Run isolated Chromium contexts side by side, with optional controls mirrored from your master session.</p>
+          <h1>Browser sessions</h1>
+          <p class="intro-copy">Use one Chrome window and sync it to background sessions.</p>
         </div>
         <a class="test-link" href="/test" target="_blank" rel="noreferrer">Open built-in test page <span>↗</span></a>
       </section>
 
       <section class="panel setup-panel">
         <div class="panel-heading">
-          <div><p class="eyebrow">SESSION SETUP</p><h2>Launch browsers</h2></div>
+          <div><h2>Launch browsers</h2></div>
           <span class="chip"><span class="chip-dot"></span> Context isolation enabled</span>
         </div>
         <form id="launch-form">
@@ -46,23 +45,19 @@
             <div class="session-count"><label class="field-label" for="session-count">Browser sessions</label><div class="count-control"><input id="session-count" type="number" min="1" max="40" value="5" required><span>of 40 max</span></div></div>
             <div class="form-actions"><button class="button button-secondary" id="stop-button" type="button" disabled>Stop browsers</button><button class="button button-primary" id="start-button" type="submit"><span>▶</span> Start browsers</button></div>
           </div>
-          <label class="permission-option"><input id="background-mode" type="checkbox"><span>Run Chrome in the background</span></label>
-          <button class="button button-secondary" id="show-master" type="button" hidden>Show master Chrome window</button>
-          <p class="field-hint" id="background-hint">Follower sessions always run in the background. Turn this on to hide the master window too.</p>
-          <p class="field-hint">Tabs refresh every 8 hours. The Auto Clicker pauses until they finish loading.</p>
-          <p class="field-hint">Localhost test pages do not require authorization. Other websites require Yes here and are also checked by the server before any browser starts.</p>
+          <button class="button button-secondary" id="show-master" type="button" hidden>Show Chrome</button>
+          <p class="field-hint">The clicker pauses during the 8-hour tab refresh.</p>
         </form>
       </section>
 
       <div class="dashboard-grid">
         <section class="panel sync-panel">
-          <div class="panel-heading compact"><div><p class="eyebrow">SESSION CONTROLS</p><h2>Action synchronization</h2></div><label class="toggle" aria-label="Toggle action synchronization"><input type="checkbox" id="sync-toggle" checked><span class="toggle-track"></span></label></div>
+          <div class="panel-heading compact"><div><h2>Action synchronization</h2></div><label class="toggle" aria-label="Toggle action synchronization"><input type="checkbox" id="sync-toggle" checked><span class="toggle-track"></span></label></div>
           <div class="sync-state"><span class="sync-indicator"></span><span id="sync-label">Sync is on</span><span class="master-tag">SESSION 1 IS MASTER</span></div>
-          <p class="muted small">Clicks, keyboard input, scrolling, and navigation in session 1 are replayed to the other sessions using browser input APIs.</p>
-          <div class="notice"><span class="notice-icon">i</span><p>Mirroring is best-effort. Dynamic layouts, sign-in state, dialogs, pop-ups, and site protections can cause differences; this app does not bypass site controls.</p></div>
+          <p class="muted small">Copies actions from the main Chrome window.</p>
         </section>
         <section class="panel performance-panel">
-          <div class="panel-heading compact"><div><p class="eyebrow">LIVE MONITORING</p><h2>Browser resources</h2></div><span class="live-badge"><span></span> LIVE</span></div>
+          <div class="panel-heading compact"><div><h2>Browser resources</h2></div><span class="live-badge"><span></span> LIVE</span></div>
           <div class="metric-row">
             <div class="metric"><span class="metric-label">CPU usage</span><strong id="cpu-value">—<small>%</small></strong><span class="metric-foot">Chromium process family</span></div>
             <div class="metric-divider"></div>
@@ -73,11 +68,11 @@
       </div>
 
       <section class="panel sessions-panel">
-        <div class="panel-heading compact"><div><p class="eyebrow">OVERVIEW</p><h2>Browser sessions <span class="count-badge" id="active-count">0</span></h2></div><span class="muted small" id="session-display"></span></div>
-        <div class="table-wrap"><table><thead><tr><th>SESSION</th><th>ROLE</th><th>STATUS</th><th>PAGE</th></tr></thead><tbody id="session-rows"><tr class="empty-row"><td colspan="4">No browser sessions running. Start with five sessions to try the local test page.</td></tr></tbody></table></div>
+        <div class="panel-heading compact"><div><h2>Browser sessions <span class="count-badge" id="active-count">0</span></h2></div><span class="muted small" id="session-display"></span></div>
+        <div class="table-wrap"><table><thead><tr><th>SESSION</th><th>ROLE</th><th>STATUS</th><th>PAGE</th></tr></thead><tbody id="session-rows"><tr class="empty-row"><td colspan="4">No sessions running.</td></tr></tbody></table></div>
       </section>
       <section class="panel log-panel">
-        <div class="panel-heading compact"><div><p class="eyebrow">ACTIVITY</p><h2>Activity &amp; errors</h2></div><span class="log-count" id="log-count">0 events</span></div>
+        <div class="panel-heading compact"><div><h2>Activity &amp; errors</h2></div><span class="log-count" id="log-count">0 events</span></div>
         <div class="log-list" id="log-list" aria-live="polite"><div class="empty-log">System activity will appear here.</div></div>
       </section>
       <footer>Runs locally on your Mac · Up to 40 isolated contexts</footer>

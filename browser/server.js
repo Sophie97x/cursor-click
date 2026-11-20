@@ -9,6 +9,7 @@ const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
 const MAX_SESSIONS = 40;
+const MAX_PENDING_ACTIONS = 128;
 const VIEWPORT = { width: 1280, height: 800 };
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -65,6 +66,10 @@ class SessionManager {
     this.startPromise = null;
     this.stopPromise = null;
     this.actionQueue = Promise.resolve();
+    this.pendingActions = [];
+    this.drainingActions = false;
+    this.releaseKeysPending = false;
+    this.heldKeys = new Set();
     this.nextId = 1;
     this.logs = [];
     this.log('info', 'Dashboard ready. Start with the local test page or an authorized website.');
@@ -229,6 +234,7 @@ class SessionManager {
     const busy = path.join(path.dirname(gate), 'clicker-busy');
     const deadline = Date.now() + 5000;
     this.refreshing = true;
+    this.invalidateActions('Pending synchronized actions discarded for tab refresh.');
     this.log('info', 'Pausing the clicker to refresh browser tabs.');
     try {
       fs.writeFileSync(gate, 'paused');
@@ -283,13 +289,64 @@ class SessionManager {
 
   receiveAction(sourcePage, action) {
     if (this.refreshing || !this.syncEnabled || this.sessions[0]?.page !== sourcePage || !action) return;
-    this.enqueue(() => this.mirrorAction(action));
+    this.enqueueAction(action);
   }
 
   enqueue(operation) {
-    this.actionQueue = this.actionQueue.then(operation).catch((error) => {
-      this.log('error', `Synchronized action failed: ${error.message}`);
-    });
+    if (this.stopping || this.refreshing || !this.syncEnabled) return;
+    if (this.pendingActions.length >= MAX_PENDING_ACTIONS) {
+      this.invalidateActions('Sync paused because followers fell behind.', true);
+      return;
+    }
+    this.pendingActions.push(operation);
+    this.startActionDrain();
+  }
+
+  enqueueAction(action) {
+    this.enqueue(() => this.mirrorAction(action));
+  }
+
+  startActionDrain() {
+    if (this.drainingActions) return;
+    this.drainingActions = true;
+    this.actionQueue = this.drainActions();
+  }
+
+  async drainActions() {
+    try {
+      while (this.releaseKeysPending || this.pendingActions.length) {
+        try {
+          if (this.releaseKeysPending) {
+            this.releaseKeysPending = false;
+            await this.releaseHeldKeys();
+          } else {
+            await this.pendingActions.shift()();
+          }
+        } catch (error) {
+          this.log('error', `Synchronized action failed: ${error.message}`);
+        }
+      }
+    } finally {
+      this.drainingActions = false;
+    }
+  }
+
+  invalidateActions(message, pause = false) {
+    this.pendingActions.length = 0;
+    this.releaseKeysPending = true;
+    if (pause) this.syncEnabled = false;
+    this.log(pause ? 'warning' : 'info', message);
+    this.startActionDrain();
+  }
+
+  async releaseHeldKeys() {
+    if (this.heldKeys.size === 0) return;
+    const keys = [...this.heldKeys];
+    this.heldKeys.clear();
+    await Promise.all(this.sessions.slice(1).filter((session) => session.page && !session.page.isClosed())
+      .map(async ({ page }) => {
+        for (const key of keys) await page.keyboard.up(key).catch(() => {});
+      }));
   }
 
   async mirrorAction(action) {
@@ -320,6 +377,10 @@ class SessionManager {
         if (!page.isClosed()) await page.evaluate(() => { window.__mirrorApplying = false; }).catch(() => {});
       }
     }));
+    if (action.type === 'key') {
+      if (action.phase === 'down') this.heldKeys.add(action.key);
+      else if (action.phase === 'up') this.heldKeys.delete(action.key);
+    }
   }
 
   async mirrorNavigation(url) {
@@ -337,6 +398,7 @@ class SessionManager {
   }
 
   setSync(enabled) {
+    if (!enabled && this.syncEnabled) this.invalidateActions('Pending actions cleared.');
     this.syncEnabled = enabled;
     this.log('info', `Action synchronization ${enabled ? 'enabled' : 'disabled'}.`);
     return this.status();
@@ -345,6 +407,7 @@ class SessionManager {
   async stop() {
     if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
+    this.invalidateActions('Pending synchronized actions discarded because browsers are stopping.');
     clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     this.stopPromise = this.closeBrowsers();

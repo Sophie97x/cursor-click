@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import CoreGraphics
 import Darwin
 
 @MainActor
@@ -15,88 +14,120 @@ final class Clicker: ObservableObject {
     @Published var message = "Ready"
     @Published private(set) var needsAccessibility = false
     @Published private(set) var countdown: Int?
-    private var helper: Process?
-    private var stopHandle: FileHandle?
-    private var countdownTask: Task<Void, Never>?
+    private var stopRequest: URL?
     private let countdownPanel = CountdownPanel()
 
     func start() {
-        guard !running, let executable = Bundle.main.executableURL else { return }
-        guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else {
-            needsAccessibility = true
-            message = "Allow Cursor Click to send clicks, then try again."
+        guard !running else { return }
+        guard let helper = Bundle.main.url(forResource: "TerminalClicker", withExtension: "swift"),
+              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
+            message = "Could not find Terminal or its clicker helper."
             return
         }
-        needsAccessibility = false
-        let statusFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CursorClick-\(UUID().uuidString).status")
+
+        let files = FileManager.default
+        let directory = files.temporaryDirectory.appendingPathComponent("CursorClick-\(UUID().uuidString)")
+        let command = directory.appendingPathComponent("Start Clicker.command")
+        let statusFile = directory.appendingPathComponent("status")
         let countdownFile = statusFile.appendingPathExtension("countdown")
+        let done = directory.appendingPathComponent("done")
+        let stop = directory.appendingPathComponent("stop")
         let duration = Double(max(10, min(pauseMilliseconds, 60_000))) / 1000
         let limit = continuous ? 0 : max(1, min(count, 1000))
-        let input = Pipe()
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = [
-            "--clicker-helper", String(duration), String(limit),
+        let arguments = [
+            helper.path, String(duration), String(limit),
             variation ? "1" : "0", pressSpace ? "1" : "0", pressLetters ? "1" : "0",
-            BrowserRefreshGate.pauseFile.path, statusFile.path
-        ]
-        process.standardInput = input
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { [weak self] finished in
-            let status = try? String(contentsOf: statusFile, encoding: .utf8)
-            try? FileManager.default.removeItem(at: statusFile)
-            try? FileManager.default.removeItem(at: countdownFile)
-            Task { @MainActor in
-                guard let self, self.helper === finished else { return }
-                self.hideCountdown()
-                self.helper = nil
-                self.stopHandle = nil
-                self.running = false
-                self.needsAccessibility = finished.terminationStatus == EX_NOPERM || !CGPreflightPostEventAccess()
-                self.message = status ?? (finished.terminationStatus == 0 ? "Stopped." : "The clicker could not run.")
-            }
-        }
+            BrowserRefreshGate.pauseFile.path, statusFile.path, stop.path,
+            String(ProcessInfo.processInfo.processIdentifier)
+        ].map(Self.shellQuote).joined(separator: " ")
+        let script = """
+        #!/bin/zsh
+        done_file=\(Self.shellQuote(done.path))
+        trap 'result=$?; /usr/bin/printf "%s" "$result" > "$done_file.tmp"; /bin/mv -f "$done_file.tmp" "$done_file"' EXIT
+        /usr/bin/swift \(arguments)
+        """
         do {
-            try process.run()
-            helper = process
-            stopHandle = input.fileHandleForWriting
-            running = true
-            message = "Move the pointer over the target window."
-            countdownTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    guard let self else { return }
-                    if let progress = try? String(contentsOf: countdownFile, encoding: .utf8),
-                       let seconds = Int(progress), seconds != self.countdown {
-                        if seconds == 0 {
-                            self.hideCountdown()
-                            self.message = "Use Control-C or Stop clicking to stop."
-                            return
-                        }
-                        self.countdown = seconds
-                        self.countdownPanel.show(seconds)
-                    }
-                    try? await Task.sleep(for: .milliseconds(80))
-                }
-            }
+            try files.createDirectory(at: directory, withIntermediateDirectories: false,
+                                      attributes: [.posixPermissions: 0o700])
+            try script.write(to: command, atomically: true, encoding: .utf8)
+            try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: command.path)
         } catch {
-            message = "Could not start clicker. \(error.localizedDescription)"
+            try? files.removeItem(at: directory)
+            message = "Could not prepare Terminal clicker. \(error.localizedDescription)"
+            return
+        }
+
+        stopRequest = stop
+        running = true
+        needsAccessibility = false
+        message = "Starting the Terminal runner…"
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.open([command], withApplicationAt: terminal, configuration: configuration) { _, error in
+            guard let error else { return }
+            try? error.localizedDescription.write(to: statusFile, atomically: true, encoding: .utf8)
+            try? "1".write(to: done, atomically: true, encoding: .utf8)
+        }
+
+        Task { [weak self] in
+            while !Task.isCancelled {
+                if let result = try? String(contentsOf: done, encoding: .utf8) {
+                    let status = try? String(contentsOf: statusFile, encoding: .utf8)
+                    self?.finish(status: status, exitCode: Int32(result))
+                    try? files.removeItem(at: directory)
+                    return
+                }
+                guard self != nil else {
+                    _ = files.createFile(atPath: stop.path, contents: nil)
+                    return
+                }
+                if !files.fileExists(atPath: stop.path),
+                   let progress = try? String(contentsOf: countdownFile, encoding: .utf8),
+                   let seconds = Int(progress) {
+                    self?.updateCountdown(seconds)
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
         }
     }
 
     func stop() {
+        guard let stopRequest else { return }
+        do {
+            try "".write(to: stopRequest, atomically: true, encoding: .utf8)
+            hideCountdown()
+            message = "Stopping…"
+        } catch {
+            message = "Use Control-C in Terminal to stop."
+        }
+    }
+
+    private func finish(status: String?, exitCode: Int32?) {
         hideCountdown()
-        try? stopHandle?.close()
-        stopHandle = nil
-        message = "Stopping…"
+        stopRequest = nil
+        running = false
+        needsAccessibility = exitCode == EX_NOPERM
+        message = status ?? (exitCode == 0 ? "Stopped." : "Terminal clicker stopped. See Terminal for details.")
+    }
+
+    private func updateCountdown(_ seconds: Int) {
+        if seconds == 0 {
+            hideCountdown()
+            message = "Use Control-C or Stop clicking to stop."
+        } else if seconds != countdown {
+            message = "Move the pointer over the target window."
+            countdown = seconds
+            countdownPanel.show(seconds)
+        }
     }
 
     private func hideCountdown() {
-        countdownTask?.cancel()
-        countdownTask = nil
         countdown = nil
         countdownPanel.hide()
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
@@ -297,18 +328,6 @@ private final class ClickerPanel: ObservableObject {
 }
 
 @main
-enum CursorClickEntry {
-    @MainActor
-    static func main() {
-        let arguments = CommandLine.arguments
-        if arguments.dropFirst().first == "--clicker-helper" {
-            runClickerHelper(Array(arguments.dropFirst(2)))
-        } else {
-            CursorClickApp.main()
-        }
-    }
-}
-
 struct CursorClickApp: App {
     var body: some Scene {
         Window("Cursor Click", id: "main") {

@@ -2,7 +2,30 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createServer, isLocalHost, validateStartRequest } = require('../server');
+const { createServer, SessionManager, isLocalHost, validateStartRequest } = require('../server');
+
+test('replay overflow pauses sync and discards queued stale actions', async () => {
+  const manager = new SessionManager();
+  let release;
+  let enteredResolve;
+  const entered = new Promise((resolve) => { enteredResolve = resolve; });
+  manager.replayed = [];
+  manager.mirrorAction = async (action) => {
+    manager.replayed.push(action.id);
+    if (action.id === 0) {
+      enteredResolve();
+      await new Promise((resolveRelease) => { release = resolveRelease; });
+    }
+  };
+  manager.enqueueAction({ id: 0 });
+  await entered;
+  for (let id = 1; id < 130; id += 1) manager.enqueueAction({ id });
+  assert.equal(manager.pendingActions.length, 0);
+  assert.equal(manager.syncEnabled, false);
+  release();
+  await manager.actionQueue;
+  assert.deepEqual(manager.replayed, [0]);
+});
 
 test('local host recognition is limited to loopback names', () => {
   assert.equal(isLocalHost('localhost'), true);

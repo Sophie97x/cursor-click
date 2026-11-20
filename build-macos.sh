@@ -24,7 +24,12 @@ for size in 16 32 128 256 512; do
         --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$iconset" -o "$resources/AppIcon.icns"
-xcrun swiftc -O -parse-as-library macOS/*.swift -o "$app/Contents/MacOS/CursorClick"
+{
+    cat macOS/ClickerHelper.swift
+    printf '\n%s\n' 'runClickerHelper(Array(CommandLine.arguments.dropFirst()))'
+} > "$resources/TerminalClicker.swift"
+xcrun swiftc -O -parse-as-library macOS/CursorClick.swift macOS/BrowserAutomationView.swift \
+    -o "$app/Contents/MacOS/CursorClick"
 ditto --noextattr --norsrc "$app" "$stage/signed/Cursor Click.app"
 app="$stage/signed/Cursor Click.app"
 codesign --force --sign - "$app"

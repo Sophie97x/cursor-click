@@ -4,7 +4,7 @@ import Darwin
 import Carbon
 
 func runClickerHelper(_ args: [String]) {
-    guard args.count == 7 else { exit(2) }
+    guard args.count == 9, let ownerPID = pid_t(args[8]), ownerPID > 1 else { exit(2) }
     let interval = Double(args[0]) ?? 1
     let limit = Int(args[1]) ?? 0
     let vary = args[2] == "1"
@@ -12,6 +12,7 @@ func runClickerHelper(_ args: [String]) {
     let pressLetters = args[4] == "1"
     let gatePath = args[5]
     let statusURL = URL(fileURLWithPath: args[6])
+    let stopRequestPath = args[7]
     let countdownURL = statusURL.appendingPathExtension("countdown")
     @Sendable func reportCountdown(_ second: Int) {
         try? String(second).write(to: countdownURL, atomically: true, encoding: .utf8)
@@ -25,15 +26,19 @@ func runClickerHelper(_ args: [String]) {
     let letterKeys: [CGKeyCode] = [0, 11, 8, 2, 14, 3, 5] // A, B, C, D, E, F, G
 
     guard CGPreflightPostEventAccess() else {
-        reportStop("Allow Cursor Click in System Settings → Privacy & Security → Accessibility.")
+        reportStop("Allow Terminal in System Settings → Privacy & Security → Accessibility, then restart the clicker.")
         exit(EX_NOPERM)
     }
 
     let stopped = DispatchSemaphore(value: 0)
-    signal(SIGINT, SIG_IGN)
-    let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-    interrupt.setEventHandler { stopped.signal() }
-    interrupt.resume()
+    let stopSignals = [SIGINT, SIGHUP].map { signalNumber in
+        signal(signalNumber, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
+        source.setEventHandler { stopped.signal() }
+        source.resume()
+        return source
+    }
+    defer { stopSignals.forEach { $0.cancel() } }
 
     NSApplication.shared.setActivationPolicy(.accessory)
     var stopHotKey: EventHotKeyRef?
@@ -50,7 +55,7 @@ func runClickerHelper(_ args: [String]) {
                             GetApplicationEventTarget(), 0, &stopHotKey)
     }
     if stopHotKey == nil {
-        print("Global Control-C unavailable. Use Stop clicking in Cursor Click.")
+        print("Global Control-C unavailable. Use Stop clicking or press Control-C in Terminal.")
     }
 
     struct WindowTarget: Equatable {
@@ -69,6 +74,7 @@ func runClickerHelper(_ args: [String]) {
                   rect.contains(point),
                   (window[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { continue }
             guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  pid != ownerPID,
                   let owner = NSRunningApplication(processIdentifier: pid),
                   owner.bundleIdentifier != "com.apple.Terminal",
                   owner.bundleIdentifier != "local.cursorclick.app",
@@ -171,6 +177,8 @@ func runClickerHelper(_ args: [String]) {
                 guard waitForTarget() else { return }
                 continue
             }
+            down.setIntegerValueField(.mouseEventClickState, value: 1)
+            up.setIntegerValueField(.mouseEventClickState, value: 1)
             down.post(tap: .cghidEventTap)
             let sendSpace = pressSpace && stillOnTarget()
             if sendSpace,
@@ -214,13 +222,19 @@ func runClickerHelper(_ args: [String]) {
             if limit > 0 && completed >= limit { break }
             nextDelay = vary ? interval * Double.random(in: 0.85...1.15) : interval
         }
-        reportStop("Stopped after \(completed) clicks.")
+        reportStop("Sent \(completed) clicks.")
     }
 
-    DispatchQueue.global(qos: .utility).async {
-        _ = FileHandle.standardInput.readDataToEndOfFile()
-        stopped.signal()
+    let stopTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    stopTimer.schedule(deadline: .now(), repeating: .milliseconds(100))
+    stopTimer.setEventHandler {
+        if FileManager.default.fileExists(atPath: stopRequestPath) ||
+            (kill(ownerPID, 0) != 0 && errno == ESRCH) {
+            stopped.signal()
+        }
     }
+    stopTimer.resume()
+    defer { stopTimer.cancel() }
     DispatchQueue.global(qos: .userInitiated).async {
         runClicker()
         exit(0)
