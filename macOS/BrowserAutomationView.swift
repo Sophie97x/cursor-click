@@ -106,19 +106,74 @@ private final class DashboardService: ObservableObject {
 
 private struct DashboardWebView: NSViewRepresentable {
     let url: URL
+    private static let progressHandler = "browserLaunchProgress"
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(dashboardURL: url) }
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView()
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.add(context.coordinator, name: Self.progressHandler)
+        let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.uiDelegate = context.coordinator
+        webView.navigationDelegate = context.coordinator
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {}
 
-    final class Coordinator: NSObject, WKUIDelegate {
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: progressHandler)
+        coordinator.hideProgress()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+        private let dashboardURL: URL
+        private let progressPanel = FloatingStatusPanel<BrowserLaunchBadge>(width: 302, height: 78)
+        private var dismissTask: Task<Void, Never>?
+
+        init(dashboardURL: URL) {
+            self.dashboardURL = dashboardURL
+        }
+
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            let origin = message.frameInfo.securityOrigin
+            guard message.name == DashboardWebView.progressHandler, message.frameInfo.isMainFrame,
+                  origin.protocol == dashboardURL.scheme, origin.host == dashboardURL.host,
+                  origin.port == dashboardURL.port else { return }
+            if message.body is NSNull {
+                hideProgress()
+                return
+            }
+            guard let values = message.body as? [String: Any],
+                  let requested = values["requested"] as? Int, (1...40).contains(requested),
+                  let completed = values["completed"] as? Int, (0...requested).contains(completed),
+                  let failed = values["failed"] as? Int, (0...completed).contains(failed),
+                  let inProgress = values["inProgress"] as? Bool,
+                  inProgress || progressPanel.isVisible else { return }
+            dismissTask?.cancel()
+            progressPanel.show(BrowserLaunchBadge(requested: requested, completed: completed,
+                                                  failed: failed, inProgress: inProgress))
+            if !inProgress {
+                dismissTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(1))
+                    if !Task.isCancelled { self?.hideProgress() }
+                }
+            }
+        }
+
+        func hideProgress() {
+            dismissTask?.cancel()
+            dismissTask = nil
+            progressPanel.hide()
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            hideProgress()
+        }
+
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {
@@ -127,5 +182,37 @@ private struct DashboardWebView: NSViewRepresentable {
             }
             return nil
         }
+    }
+}
+
+private struct BrowserLaunchBadge: View {
+    let requested: Int
+    let completed: Int
+    let failed: Int
+    let inProgress: Bool
+    private let mint = Color(red: 0.65, green: 0.98, blue: 0.79)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(inProgress ? "Starting Chrome" : failed == 0 ? "Chrome ready" : "Chrome launch finished",
+                      systemImage: "macwindow")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer(minLength: 8)
+                Text("\(completed - failed)/\(requested) ready")
+                    .monospacedDigit()
+            }
+            ProgressView(value: Double(completed), total: Double(requested))
+                .tint(mint)
+                .accessibilityLabel("Chrome launch progress")
+            if failed > 0 {
+                Text("\(failed) failed")
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(mint)
+        .padding(.horizontal, 16)
+        .frame(width: 302, height: 78)
+        .background(Color(red: 0.06, green: 0.14, blue: 0.12), in: RoundedRectangle(cornerRadius: 16))
     }
 }

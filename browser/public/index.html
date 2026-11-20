@@ -19,13 +19,11 @@
           <h1>Browser sessions</h1>
           <p class="intro-copy">Use one Chrome window and sync it to background sessions.</p>
         </div>
-        <a class="test-link" href="/test" target="_blank" rel="noreferrer">Open built-in test page <span>↗</span></a>
       </section>
 
       <section class="panel setup-panel">
         <div class="panel-heading">
           <div><h2>Launch browsers</h2></div>
-          <span class="chip"><span class="chip-dot"></span> Context isolation enabled</span>
         </div>
         <form id="launch-form">
           <label class="field-label" for="target-url">Starting URL</label>
@@ -44,6 +42,10 @@
           <div class="form-row">
             <div class="session-count"><label class="field-label" for="session-count">Browser sessions</label><div class="count-control"><input id="session-count" type="number" min="1" max="40" value="5" required><span>of 40 max</span></div></div>
             <div class="form-actions"><button class="button button-secondary" id="stop-button" type="button" disabled>Stop browsers</button><button class="button button-primary" id="start-button" type="submit"><span>▶</span> Start browsers</button></div>
+          </div>
+          <div class="launch-progress" id="launch-progress" hidden>
+            <div class="launch-progress-label" id="launch-progress-label" role="status" aria-live="polite"></div>
+            <div class="launch-track" role="progressbar" id="launch-progress-bar" aria-label="Browser launch progress" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0"><span id="launch-progress-fill"></span></div>
           </div>
           <button class="button button-secondary" id="show-master" type="button" hidden>Show Chrome</button>
           <p class="field-hint">The clicker pauses during the 8-hour tab refresh.</p>

@@ -61,6 +61,9 @@ class SessionManager {
     this.followerBrowser = null;
     this.browserPids = new Map();
     this.sessions = [];
+    this.testPort = null;
+    this.testResults = new Map();
+    this.launch = null;
     this.syncEnabled = true;
     this.stopping = false;
     this.startPromise = null;
@@ -68,8 +71,9 @@ class SessionManager {
     this.actionQueue = Promise.resolve();
     this.pendingActions = [];
     this.drainingActions = false;
-    this.releaseKeysPending = false;
+    this.releaseInputPending = false;
     this.heldKeys = new Set();
+    this.heldMousePages = new Set();
     this.nextId = 1;
     this.logs = [];
     this.log('info', 'Dashboard ready. Start with the local test page or an authorized website.');
@@ -133,29 +137,39 @@ class SessionManager {
   }
 
   async start(url, count, headless = this.headless) {
-    if (this.startPromise) return this.startPromise;
+    if (this.startPromise) {
+      await this.startPromise;
+      return this.status();
+    }
     if (this.stopPromise) throw new Error('Wait for browsers to stop.');
     if (this.refreshing) throw new Error('Wait for the tab refresh to finish.');
     this.stopping = false;
+    if (!this.sessions.length) this.testResults.clear();
     if (!this.browser?.isConnected()) this.headless = headless;
     if (!this.browser?.isConnected() && this.refreshGate) {
       if (fs.existsSync(this.refreshGate)) fs.unlinkSync(this.refreshGate);
     }
+    this.launch = { requested: count, inProgress: true };
     this.startPromise = this.startSessions(url, count);
     try {
-      return await this.startPromise;
+      await this.startPromise;
     } finally {
+      if (this.launch) this.launch.inProgress = false;
       this.startPromise = null;
     }
+    return this.status();
   }
 
   async startSessions(url, count) {
     const masterBrowser = await this.ensureBrowser();
     if (this.sessions.length > count) {
       const excess = this.sessions.splice(count);
-      for (const session of excess) await session.context?.close().catch((error) => {
-        this.log('warning', `Could not close session ${session.id}: ${error.message}`);
-      });
+      for (const session of excess) {
+        this.testResults.delete(session.id);
+        await session.context?.close().catch((error) => {
+          this.log('warning', `Could not close session ${session.id}: ${error.message}`);
+        });
+      }
     }
 
     while (!this.stopping && this.sessions.length < count) {
@@ -168,6 +182,11 @@ class SessionManager {
         const context = await browser.newContext({ viewport: VIEWPORT });
         session.context = context;
         await context.exposeBinding('__automationMirror', ({ page }, action) => this.receiveAction(page, action));
+        await context.exposeBinding('__automationTestInput', ({ page, frame }, counts) => {
+          if (page === session.page && frame === page.mainFrame() && this.isTestPage(frame.url())) {
+            this.recordTestInput(session, counts);
+          }
+        });
         await context.addInitScript(() => {
           window.__mirrorApplying = false;
           const send = (payload) => {
@@ -175,13 +194,26 @@ class SessionManager {
               window.__automationMirror(payload).catch(() => {});
             }
           };
-          document.addEventListener('click', (event) => {
-            if (event.detail === 0) return;
-            send({
-              type: 'click', x: event.clientX, y: event.clientY, button: event.button,
-              modifiers: { alt: event.altKey, ctrl: event.ctrlKey, meta: event.metaKey, shift: event.shiftKey },
-            });
+          let mouseDown = false;
+          const sendMouse = (event, phase) => send({
+            type: 'mouse', phase, x: event.clientX, y: event.clientY,
+            clickCount: Math.max(1, event.detail),
+          });
+          document.addEventListener('mousedown', (event) => {
+            if (!event.isTrusted || event.button !== 0) return;
+            mouseDown = true;
+            sendMouse(event, 'down');
           }, true);
+          document.addEventListener('mouseup', (event) => {
+            if (!event.isTrusted || event.button !== 0 || !mouseDown) return;
+            mouseDown = false;
+            sendMouse(event, 'up');
+          }, true);
+          window.addEventListener('blur', () => {
+            if (!mouseDown) return;
+            mouseDown = false;
+            send({ type: 'mouse', phase: 'cancel' });
+          });
           document.addEventListener('keydown', (event) => {
             send({ type: 'key', phase: 'down', key: event.key === ' ' ? 'Space' : event.key });
           }, true);
@@ -194,9 +226,15 @@ class SessionManager {
         });
         const page = await context.newPage();
         session.page = page;
+        page.once('close', () => this.heldMousePages.delete(page));
         page.on('framenavigated', (frame) => {
           if (frame === page.mainFrame()) {
             session.url = frame.url();
+            if (!this.stopping && this.sessions.includes(session) &&
+                this.isTestPage(session.url) && !this.testResults.has(session.id)) {
+              const role = this.sessions[0] === session ? 'Main' : 'Follower';
+              this.testResults.set(session.id, { id: session.id, role, clicks: 0, keys: 0, characters: 0 });
+            }
             if (!this.refreshing && this.sessions[0] === session) this.enqueue(() => this.mirrorNavigation(frame.url()));
           }
         });
@@ -215,7 +253,39 @@ class SessionManager {
     await this.focusMaster().catch((error) => this.log('warning', `Could not show the master Chrome window: ${error.message}`));
     if (!this.stopping) this.log('info', `Startup finished: ${this.sessions.filter((item) => item.status === 'active').length} active session(s).`);
     if (!this.stopping) this.scheduleRefresh();
-    return this.status();
+  }
+
+  isTestPage(value) {
+    if (this.testPort == null || !URL.canParse(value)) return false;
+    const url = new URL(value);
+    return url.protocol === 'http:' && Number(url.port || '80') === this.testPort &&
+      isLocalHost(url.hostname) && (url.pathname === '/test' || url.pathname === '/test.html');
+  }
+
+  recordTestInput(session, counts) {
+    if (this.stopping || !counts || typeof counts !== 'object') return;
+    const result = this.testResults.get(session.id);
+    if (!result) return;
+    for (const metric of ['clicks', 'keys', 'characters']) {
+      const amount = counts[metric];
+      if (Number.isSafeInteger(amount) && amount > 0 && Number.isSafeInteger(result[metric] + amount)) {
+        result[metric] += amount;
+      }
+    }
+  }
+
+  testStatus() {
+    const totals = { clicks: 0, keys: 0, characters: 0 };
+    const sessions = [...this.testResults.values()].map((result) => ({ ...result }));
+    for (const session of sessions) {
+      totals.clicks += session.clicks;
+      totals.keys += session.keys;
+      totals.characters += session.characters;
+    }
+    const running = !this.stopping && this.sessions.some((session) =>
+      session.page && !session.page.isClosed() && this.isTestPage(session.url)
+    );
+    return { sessions, totals, running };
   }
 
   scheduleRefresh() {
@@ -314,11 +384,11 @@ class SessionManager {
 
   async drainActions() {
     try {
-      while (this.releaseKeysPending || this.pendingActions.length) {
+      while (this.releaseInputPending || this.pendingActions.length) {
         try {
-          if (this.releaseKeysPending) {
-            this.releaseKeysPending = false;
-            await this.releaseHeldKeys();
+          if (this.releaseInputPending) {
+            this.releaseInputPending = false;
+            await this.releaseHeldInput();
           } else {
             await this.pendingActions.shift()();
           }
@@ -333,14 +403,22 @@ class SessionManager {
 
   invalidateActions(message, pause = false) {
     this.pendingActions.length = 0;
-    this.releaseKeysPending = true;
+    this.releaseInputPending = true;
     if (pause) this.syncEnabled = false;
     this.log(pause ? 'warning' : 'info', message);
     this.startActionDrain();
   }
 
-  async releaseHeldKeys() {
-    if (this.heldKeys.size === 0) return;
+  async cancelMousePress(page) {
+    if (!this.heldMousePages.delete(page) || page.isClosed()) return;
+    await page.mouse.move(-1, -1);
+    await page.mouse.up();
+  }
+
+  async releaseHeldInput() {
+    const mousePages = [...this.heldMousePages];
+    await Promise.all(mousePages.map((page) => this.cancelMousePress(page).catch(() => {})));
+    if (!this.heldKeys.size) return;
     const keys = [...this.heldKeys];
     this.heldKeys.clear();
     await Promise.all(this.sessions.slice(1).filter((session) => session.page && !session.page.isClosed())
@@ -355,14 +433,17 @@ class SessionManager {
     await Promise.all(followers.map(async ({ id, page }) => {
       try {
         await page.evaluate(() => { window.__mirrorApplying = true; });
-        if (action.type === 'click') {
-          const modifiers = Object.entries(action.modifiers || {})
-            .filter(([, enabled]) => enabled)
-            .map(([name]) => ({ alt: 'Alt', ctrl: 'Control', meta: 'Meta', shift: 'Shift' })[name]);
-          await page.mouse.click(action.x, action.y, {
-            button: ['left', 'middle', 'right'][action.button] || 'left',
-            modifiers,
-          });
+        if (action.type === 'mouse' && action.phase === 'down') {
+          await this.cancelMousePress(page);
+          await page.mouse.move(action.x, action.y);
+          await page.mouse.down({ clickCount: action.clickCount });
+          this.heldMousePages.add(page);
+        } else if (action.type === 'mouse' && action.phase === 'up' && this.heldMousePages.has(page)) {
+          await page.mouse.move(action.x, action.y);
+          await page.mouse.up({ clickCount: action.clickCount });
+          this.heldMousePages.delete(page);
+        } else if (action.type === 'mouse' && action.phase === 'cancel') {
+          await this.cancelMousePress(page);
         } else if (action.type === 'key' && action.phase === 'down') {
           await page.keyboard.down(action.key);
         } else if (action.type === 'key' && action.phase === 'up') {
@@ -389,6 +470,7 @@ class SessionManager {
       .filter((session) => session.status === 'active' && session.page && session.page.url() !== url)
       .map(async (session) => {
         try {
+          await this.cancelMousePress(session.page);
           await session.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
           session.url = session.page.url();
         } catch (error) {
@@ -407,6 +489,7 @@ class SessionManager {
   async stop() {
     if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
+    this.launch = null;
     this.invalidateActions('Pending synchronized actions discarded because browsers are stopping.');
     clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
@@ -469,9 +552,21 @@ class SessionManager {
 
   status() {
     const usage = this.processUsage();
+    const activeCount = this.sessions.filter((session) => session.status === 'active').length;
+    let launch = null;
+    if (this.launch) {
+      const { requested, inProgress } = this.launch;
+      const targetSessions = this.sessions.slice(0, requested);
+      const ready = targetSessions.filter((session) => session.status === 'active').length;
+      const failed = inProgress
+        ? targetSessions.filter((session) => session.status === 'error').length
+        : requested - ready;
+      launch = { requested, completed: ready + failed, failed, inProgress };
+    }
     return {
       sessions: this.sessions.map(({ id, status, url, error }) => ({ id, status, url, error })),
-      activeCount: this.sessions.filter((session) => session.status === 'active').length,
+      activeCount,
+      launch,
       syncEnabled: this.syncEnabled,
       headless: this.headless,
       refreshing: this.refreshing,
@@ -525,6 +620,7 @@ function createServer({ headless = process.env.HEADLESS === '1', openBrowser = t
       }
 
       if (request.method === 'GET' && pathname === '/api/status') return sendJson(response, 200, manager.status());
+      if (request.method === 'GET' && pathname === '/api/test-status') return sendJson(response, 200, manager.testStatus());
       if (request.method === 'POST' && pathname === '/api/start') {
         const body = await readJson(request);
         const validation = validateStartRequest(body);
@@ -590,6 +686,7 @@ function createServer({ headless = process.env.HEADLESS === '1', openBrowser = t
         server.listen(port, '127.0.0.1', resolve);
       });
       const address = server.address();
+      manager.testPort = address.port;
       const url = `http://localhost:${address.port}`;
       manager.log('success', `Dashboard available at ${url}`);
       if (openBrowser && process.env.BROWSER_AUTOLAUNCH !== '0') {

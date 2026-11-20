@@ -1,10 +1,10 @@
 # Cursor Click
 
-I wanted one app for my auto clicker and Chrome sessions. I use the main Chrome window and let the background sessions follow along. The built-in test page is a quick way to see sync working.
+I use one Chrome window and let background sessions follow my clicks and typing. The floating status panel shows Chrome launch progress. The built-in local test page opens by default and shows click and typed-character counts for each session.
 
 ![Three synchronized browser sessions running](assets/dashboard-running.png)
 
-![Built-in page showing synchronized clicks](assets/local-test.png)
+![Built-in page showing per-session click and typing totals](assets/local-test.png)
 
 ## Build and run
 

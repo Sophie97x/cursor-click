@@ -13,6 +13,20 @@ const syncToggle = document.querySelector('#sync-toggle');
 const toast = document.querySelector('#toast');
 let toastTimer;
 let renderedLogIds = new Set();
+let lastPostedLaunchProgress;
+
+function postLaunchProgress(payload) {
+  const normalized = payload == null ? null : {
+    requested: payload.requested,
+    completed: payload.completed,
+    failed: payload.failed,
+    inProgress: payload.inProgress,
+  };
+  const key = JSON.stringify(normalized);
+  if (key === lastPostedLaunchProgress) return;
+  lastPostedLaunchProgress = key;
+  window.webkit?.messageHandlers?.browserLaunchProgress?.postMessage(normalized);
+}
 
 function showToast(message, isError = false) {
   toast.textContent = message;
@@ -97,6 +111,7 @@ function renderStatus(status) {
   renderSessions(status.sessions);
   renderLogs(status.logs);
   document.querySelector('#active-count').textContent = status.activeCount;
+  renderLaunchProgress(status.launch ?? null);
   document.querySelector('#cpu-value').innerHTML = `${status.cpuPercent ?? '—'}<small>%</small>`;
   document.querySelector('#memory-value').innerHTML = `${status.memoryBytes == null ? '—' : (status.memoryBytes / (1024 ** 3)).toFixed(2)}<small> GB</small>`;
   document.querySelector('#sync-label').textContent = status.syncEnabled ? 'Sync is on' : 'Sync is off';
@@ -108,12 +123,40 @@ function renderStatus(status) {
   const warning = document.querySelector('#resource-warning');
   warning.hidden = status.memoryBytes == null || status.memoryBytes < status.memoryLimitBytes;
   if (!warning.hidden) warning.textContent = 'Chromium is using over 65% of system memory. Consider stopping some sessions.';
-  startButton.disabled = status.refreshing || status.sessions.some((session) => session.status === 'starting');
+  startButton.disabled = status.refreshing || Boolean(status.launch?.inProgress) || status.sessions.some((session) => session.status === 'starting');
   stopButton.disabled = !status.browserRunning;
   showMaster.hidden = status.headless || status.sessions[0]?.status !== 'active';
   document.querySelector('#session-display').textContent = status.refreshing ? 'Refreshing tabs · clicker paused' : status.browserRunning
     ? (status.headless ? 'Running in the background' : 'Followers in background')
     : '';
+}
+
+function renderLaunchProgress(launch) {
+  const panel = document.querySelector('#launch-progress');
+  if (!launch) {
+    panel.hidden = true;
+    postLaunchProgress(null);
+    return;
+  }
+  const requested = Math.max(0, Number(launch.requested) || 0);
+  const completed = Math.min(requested, Math.max(0, Number(launch.completed) || 0));
+  const failed = Math.min(completed, Math.max(0, Number(launch.failed) || 0));
+  const inProgress = Boolean(launch.inProgress);
+  postLaunchProgress({ requested, completed, failed, inProgress });
+  const ready = completed - failed;
+  const bar = document.querySelector('#launch-progress-bar');
+  const fill = document.querySelector('#launch-progress-fill');
+  bar.setAttribute('aria-valuemax', String(requested));
+  bar.setAttribute('aria-valuenow', String(completed));
+  fill.style.width = `${requested ? (completed / requested) * 100 : 0}%`;
+  const result = `${ready} of ${requested} ready${failed ? ` · ${failed} failed` : ''}`;
+  bar.setAttribute('aria-valuetext', result);
+  const label = document.querySelector('#launch-progress-label');
+  const message = inProgress
+    ? `Starting Chrome · ${result}`
+    : failed && ready === 0 ? `Launch failed · ${result}` : result;
+  if (label.textContent !== message) label.textContent = message;
+  panel.hidden = false;
 }
 
 launchForm.addEventListener('submit', async (event) => {
@@ -130,7 +173,7 @@ launchForm.addEventListener('submit', async (event) => {
   authorizationExplanation.classList.remove('blocked');
   try {
     await api('/api/start', { url: urlInput.value, count, authorized });
-    showToast(`Starting up to ${count} session${count === 1 ? '' : 's'}…`);
+    refresh();
   } catch (error) {
     if (!local) {
       authorizationExplanation.textContent = `${error.message} Select Yes only if you own this website or have explicit permission to test it.`;
@@ -173,6 +216,7 @@ async function refresh() {
     const response = await fetch('/api/status', { cache: 'no-store' });
     renderStatus(await response.json());
   } catch {
+    postLaunchProgress(null);
     showToast('Lost connection to the local dashboard server.', true);
   }
 }

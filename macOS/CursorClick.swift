@@ -15,7 +15,7 @@ final class Clicker: ObservableObject {
     @Published private(set) var needsAccessibility = false
     @Published private(set) var countdown: Int?
     private var stopRequest: URL?
-    private let countdownPanel = CountdownPanel()
+    private let countdownPanel = FloatingStatusPanel<CountdownBadge>(width: 220, height: 62)
 
     func start() {
         guard !running else { return }
@@ -117,7 +117,7 @@ final class Clicker: ObservableObject {
         } else if seconds != countdown {
             message = "Move the pointer over the target window."
             countdown = seconds
-            countdownPanel.show(seconds)
+            countdownPanel.show(CountdownBadge(seconds: seconds))
         }
     }
 
@@ -132,26 +132,38 @@ final class Clicker: ObservableObject {
 }
 
 @MainActor
-private final class CountdownPanel {
-    private var panel: NSPanel?
-    private var badge: NSHostingView<CountdownBadge>?
+final class FloatingStatusPanel<Content: View> {
+    private let size: NSSize
+    private var panel: FloatingStatusWindow?
+    private var hostedContent: NSHostingView<Content>?
 
-    func show(_ seconds: Int) {
-        if let badge {
-            badge.rootView = CountdownBadge(seconds: seconds)
+    var isVisible: Bool { panel?.isVisible == true }
+
+    init(width: CGFloat, height: CGFloat) {
+        size = NSSize(width: width, height: height)
+    }
+
+    func show(_ content: Content) {
+        if let hostedContent {
+            hostedContent.rootView = content
             return
         }
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
             ?? NSScreen.main else { return }
-        let size = NSSize(width: 220, height: 62)
-        let rect = NSRect(x: screen.visibleFrame.midX - size.width / 2,
+        var rect = NSRect(x: screen.visibleFrame.midX - size.width / 2,
                           y: screen.visibleFrame.maxY - size.height - 16,
                           width: size.width, height: size.height)
-        let panel = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel],
+        let existing = NSApp.windows.compactMap { $0 as? FloatingStatusWindow }
+            .filter(\.isVisible)
+            .sorted { $0.frame.maxY > $1.frame.maxY }
+        for window in existing where window.frame.intersects(rect) {
+            rect.origin.y = window.frame.minY - size.height - 8
+        }
+        let panel = FloatingStatusWindow(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
-        let badge = NSHostingView(rootView: CountdownBadge(seconds: seconds))
-        badge.setFrameSize(size)
-        panel.contentView = badge
+        let hostedContent = NSHostingView(rootView: content)
+        hostedContent.setFrameSize(size)
+        panel.contentView = hostedContent
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -160,16 +172,18 @@ private final class CountdownPanel {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.panel = panel
-        self.badge = badge
+        self.hostedContent = hostedContent
         panel.orderFrontRegardless()
     }
 
     func hide() {
         panel?.orderOut(nil)
         panel = nil
-        badge = nil
+        hostedContent = nil
     }
 }
+
+private final class FloatingStatusWindow: NSPanel {}
 
 private struct CountdownBadge: View {
     let seconds: Int

@@ -34,8 +34,6 @@ h1 { font-size: clamp(24px, 3vw, 32px); line-height: 1.25; }
 h1 span { color: #95a5c1; font-weight: 500; }
 h2 { font-size: 16px; }
 .intro-copy { color: var(--muted); margin: 9px 0 0; font-size: 13px; }
-.test-link { flex: 0 0 auto; color: var(--mint); font-size: 12px; text-decoration: none; padding-bottom: 4px; }
-.test-link span { font-size: 16px; margin-left: 3px; }
 .panel { background: linear-gradient(140deg, #1a2231, #171e2b 82%); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 26px #05091225; }
 .setup-panel { padding: 22px 24px 20px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 21px; }
@@ -71,6 +69,11 @@ h2 { font-size: 16px; }
 .button-secondary { border-color: #3a4659; background: #1c2535; color: #d3dbe7; }
 .button-secondary:hover:not(:disabled) { background: #263248; }
 .field-hint { margin: 12px 0 0; font-size: 10px; }
+.launch-progress { margin-top: 15px; }
+.launch-progress-label { margin-bottom: 7px; color: #d7dfeb; font-size: 11px; font-weight: 600; }
+.launch-track { height: 7px; overflow: hidden; border-radius: 99px; background: #2a3446; }
+.launch-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #64d9b2, #8b9bff); transition: width .25s ease; }
+#show-master { margin-top: 12px; }
 .dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
 .sync-panel, .performance-panel { min-height: 210px; padding: 20px 21px; }
 .sync-state { display: flex; align-items: center; gap: 8px; color: #d4dce8; font-size: 12px; font-weight: 600; }
