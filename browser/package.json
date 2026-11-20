@@ -1,0 +1,17 @@
+{
+  "name": "browser-automation",
+  "version": "1.0.0",
+  "description": "A local dashboard for isolated Playwright browser sessions",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright": "^1.65.1"
+  }
+}
