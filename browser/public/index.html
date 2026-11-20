@@ -48,7 +48,7 @@
           </div>
           <label class="permission-option"><input id="background-mode" type="checkbox"><span>Run Chrome in the background</span></label>
           <button class="button button-secondary" id="show-master" type="button" hidden>Show master Chrome window</button>
-          <p class="field-hint" id="background-hint">By default, only the master Chrome window is visible. Turn this on to hide all Chrome windows.</p>
+          <p class="field-hint" id="background-hint">Follower sessions always run in the background. Turn this on to hide the master window too.</p>
           <p class="field-hint">Tabs refresh every 8 hours. The Auto Clicker pauses until they finish loading.</p>
           <p class="field-hint">Localhost test pages do not require authorization. Other websites require Yes here and are also checked by the server before any browser starts.</p>
         </form>
@@ -80,7 +80,7 @@
         <div class="panel-heading compact"><div><p class="eyebrow">ACTIVITY</p><h2>Activity &amp; errors</h2></div><span class="log-count" id="log-count">0 events</span></div>
         <div class="log-list" id="log-list" aria-live="polite"><div class="empty-log">System activity will appear here.</div></div>
       </section>
-      <footer>Runs locally on your Mac · One Chromium process · Up to 40 isolated contexts</footer>
+      <footer>Runs locally on your Mac · Up to 40 isolated contexts</footer>
     </main>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

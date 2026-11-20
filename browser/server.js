@@ -57,12 +57,13 @@ class SessionManager {
     this.refreshing = false;
     this.browser = null;
     this.browserCdp = null;
-    this.browserPid = null;
+    this.followerBrowser = null;
+    this.browserPids = new Map();
     this.sessions = [];
     this.syncEnabled = true;
-    if (!this.browser?.isConnected()) this.headless = headless;
     this.stopping = false;
     this.startPromise = null;
+    this.stopPromise = null;
     this.actionQueue = Promise.resolve();
     this.nextId = 1;
     this.logs = [];
@@ -74,8 +75,10 @@ class SessionManager {
     this.logs.length = Math.min(this.logs.length, 100);
   }
 
-  async ensureBrowser() {
-    if (this.browser?.isConnected()) return this.browser;
+  async ensureBrowser(follower = false) {
+    const slot = follower ? 'followerBrowser' : 'browser';
+    if (this[slot]?.isConnected()) return this[slot];
+    const headless = follower || this.headless;
 
     const chromePath = findChrome();
     const localBrowserPath = process.env.PLAYWRIGHT_BROWSERS_PATH || path.join(__dirname, '.playwright-browsers');
@@ -93,29 +96,43 @@ class SessionManager {
       executablePath = chromium.executablePath();
     }
 
-    this.browser = await chromium.launch({
+    const browser = await chromium.launch({
       executablePath,
-      headless: this.headless,
-      refreshing: this.refreshing,
+      headless,
       args: ['--disable-extensions'],
     });
-    this.browserCdp = this.headless ? null : await this.browser.newBrowserCDPSession();
-    this.browserPid = this.browser._process?.pid || null;
-    this.browser.on('disconnected', () => {
-      this.browser = null;
-      this.browserCdp = null;
-      this.browserPid = null;
-      this.sessions = [];
-      this.log('warning', 'Chromium disconnected; browser sessions have ended.');
+    this[slot] = browser;
+    browser.once('disconnected', () => {
+      if (this[slot] !== browser) return;
+      this[slot] = null;
+      this.browserPids.delete(browser);
+      if (!follower) this.browserCdp = null;
+      if (!this.stopping) {
+        this.log('warning', 'A browser process disconnected; ending the managed sessions.');
+        this.stop().catch((error) => this.log('error', error.message));
+      }
     });
-    this.log('success', `Started one ${chromePath ? 'Google Chrome' : 'Playwright Chromium'} process.`);
-    return this.browser;
+    const cdp = await browser.newBrowserCDPSession();
+    try {
+      const { processInfo } = await cdp.send('SystemInfo.getProcessInfo');
+      const pid = processInfo.find(({ type }) => type === 'browser')?.id;
+      if (pid && browser.isConnected()) this.browserPids.set(browser, pid);
+    } catch (error) {
+      this.log('warning', `Could not identify the browser process: ${error.message}`);
+    } finally {
+      if (headless) await cdp.detach().catch(() => {});
+      else if (browser.isConnected()) this.browserCdp = cdp;
+    }
+    this.log('success', headless ? 'Started a background browser process.' : 'Started the visible master browser.');
+    return browser;
   }
 
   async start(url, count, headless = this.headless) {
     if (this.startPromise) return this.startPromise;
+    if (this.stopPromise) throw new Error('Wait for browsers to stop.');
     if (this.refreshing) throw new Error('Wait for the tab refresh to finish.');
     this.stopping = false;
+    if (!this.browser?.isConnected()) this.headless = headless;
     if (!this.browser?.isConnected() && this.refreshGate) {
       if (fs.existsSync(this.refreshGate)) fs.unlinkSync(this.refreshGate);
     }
@@ -128,7 +145,7 @@ class SessionManager {
   }
 
   async startSessions(url, count) {
-    const browser = await this.ensureBrowser();
+    const masterBrowser = await this.ensureBrowser();
     if (this.sessions.length > count) {
       const excess = this.sessions.splice(count);
       for (const session of excess) await session.context?.close().catch((error) => {
@@ -140,6 +157,9 @@ class SessionManager {
       const session = { id: this.nextId++, status: 'starting', url, error: null, context: null, page: null };
       this.sessions.push(session);
       try {
+        const follower = !this.headless && this.sessions[0] !== session;
+        const browser = follower ? await this.ensureBrowser(true) : masterBrowser;
+        if (this.stopping) break;
         const context = await browser.newContext({ viewport: VIEWPORT });
         session.context = context;
         await context.exposeBinding('__automationMirror', ({ page }, action) => this.receiveAction(page, action));
@@ -169,7 +189,6 @@ class SessionManager {
         });
         const page = await context.newPage();
         session.page = page;
-        if (this.sessions[0] !== session) await this.minimizeFollowerWindow(session);
         page.on('framenavigated', (frame) => {
           if (frame === page.mainFrame()) {
             session.url = frame.url();
@@ -185,7 +204,7 @@ class SessionManager {
         session.status = 'error';
         session.error = error.message;
         this.log('error', `Session ${session.id} failed: ${error.message}`);
-        if (!session.context) this.sessions = this.sessions.filter((item) => item !== session);
+        if (!session.context) break;
       }
     }
     await this.focusMaster().catch((error) => this.log('warning', `Could not show the master Chrome window: ${error.message}`));
@@ -239,22 +258,6 @@ class SessionManager {
       this.log('error', `Tab refresh failed: ${error.message}. Stop and restart browser sessions before starting the clicker again.`);
     } finally {
       this.refreshing = false;
-    }
-  }
-
-  async minimizeFollowerWindow(session) {
-    if (!this.browserCdp || !session.page) return;
-    let pageCdp;
-    try {
-      pageCdp = await session.context.newCDPSession(session.page);
-      const { targetInfo } = await pageCdp.send('Target.getTargetInfo');
-      const { windowId } = await this.browserCdp.send('Browser.getWindowForTarget', { targetId: targetInfo.targetId });
-      session.windowId = windowId;
-      await this.browserCdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
-    } catch (error) {
-      this.log('warning', `Could not minimize follower session ${session.id}: ${error.message}`);
-    } finally {
-      await pageCdp?.detach().catch(() => {});
     }
   }
 
@@ -340,32 +343,46 @@ class SessionManager {
   }
 
   async stop() {
+    if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
     clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
-    const sessions = this.sessions;
-    this.sessions = [];
-    for (const session of sessions) {
-      session.status = 'stopping';
-      await session.context?.close().catch((error) => this.log('warning', `Could not close session ${session.id}: ${error.message}`));
+    this.stopPromise = this.closeBrowsers();
+    try {
+      return await this.stopPromise;
+    } finally {
+      this.stopPromise = null;
     }
-    if (this.browser?.isConnected()) await this.browser.close().catch((error) => this.log('warning', error.message));
-    this.browser = null;
-    this.browserCdp = null;
-    this.browserPid = null;
-    this.log('success', 'All sessions and Chromium have stopped.');
+  }
+
+  async closeBrowsers() {
+    const close = async () => {
+      const browsers = [this.browser, this.followerBrowser];
+      this.browser = null;
+      this.followerBrowser = null;
+      this.browserCdp = null;
+      this.browserPids.clear();
+      await Promise.all(browsers.filter(Boolean).map((browser) =>
+        browser.close().catch((error) => this.log('warning', error.message))
+      ));
+    };
+    await close();
+    await this.startPromise?.catch(() => {});
+    if (this.browser || this.followerBrowser) await close();
+    this.sessions = [];
+    this.log('success', 'All browser sessions have stopped.');
     return this.status();
   }
 
   processUsage() {
-    if (!this.browserPid) return { cpu: 0, memoryBytes: 0 };
+    if (!this.browserPids.size) return { cpu: 0, memoryBytes: 0 };
     try {
       const lines = execFileSync('ps', ['-axo', 'pid=,ppid=,%cpu=,rss='], { encoding: 'utf8' }).trim().split('\n');
       const processes = lines.map((line) => {
         const [pid, ppid, cpu, rss] = line.trim().split(/\s+/).map(Number);
         return { pid, ppid, cpu, rss };
       }).filter((item) => Number.isFinite(item.pid));
-      const descendants = new Set([this.browserPid]);
+      const descendants = new Set(this.browserPids.values());
       let updated = true;
       while (updated) {
         updated = false;
@@ -394,7 +411,8 @@ class SessionManager {
       activeCount: this.sessions.filter((session) => session.status === 'active').length,
       syncEnabled: this.syncEnabled,
       headless: this.headless,
-      browserRunning: Boolean(this.browser?.isConnected() || this.startPromise),
+      refreshing: this.refreshing,
+      browserRunning: Boolean(this.browser?.isConnected() || this.startPromise || this.stopPromise),
       cpuPercent: usage.cpu,
       memoryBytes: usage.memoryBytes,
       memoryLimitBytes: Math.round(os.totalmem() * 0.65),

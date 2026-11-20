@@ -1,6 +1,6 @@
 # Cursor Click
 
-I wanted one app for my auto clicker and Chrome sessions, so I put both in Cursor Click. The dashboard runs up to 40 separate browser sessions. I can work in the main Chrome window and mirror its clicks and keystrokes to the others, or run them all in the background.
+I wanted one app for my auto clicker and Chrome sessions, so I put both in Cursor Click. The dashboard runs up to 40 separate browser sessions. I can work in the main Chrome window and mirror its clicks and keystrokes to background sessions, or run them all in the background.
 
 The clicker stops if its target window closes or loses focus. It also pauses when the dashboard refreshes the tabs every eight hours.
 

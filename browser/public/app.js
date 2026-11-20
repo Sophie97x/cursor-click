@@ -115,7 +115,7 @@ function renderStatus(status) {
   backgroundMode.disabled = status.browserRunning;
   if (status.browserRunning) backgroundMode.checked = status.headless;
   document.querySelector('#session-display').textContent = status.refreshing ? 'Refreshing tabs · clicker paused' : status.browserRunning
-    ? (status.headless ? 'Running in the background' : 'Master window visible · followers minimized')
+    ? (status.headless ? 'Running in the background' : 'Master window visible · followers in background')
     : '';
 }
 
