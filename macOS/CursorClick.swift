@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import CoreGraphics
+import Darwin
 
 @MainActor
 final class Clicker: ObservableObject {
@@ -12,17 +13,24 @@ final class Clicker: ObservableObject {
     @Published var pressLetters = true
     @Published var running = false
     @Published var message = "Ready"
+    @Published private(set) var needsAccessibility = false
+    @Published private(set) var countdown: Int?
     private var helper: Process?
     private var stopHandle: FileHandle?
+    private var countdownTask: Task<Void, Never>?
+    private let countdownPanel = CountdownPanel()
 
     func start() {
         guard !running, let executable = Bundle.main.executableURL else { return }
         guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else {
-            message = "Allow Cursor Click in System Settings → Privacy & Security → Accessibility, then try again."
+            needsAccessibility = true
+            message = "Allow Cursor Click to send clicks, then try again."
             return
         }
+        needsAccessibility = false
         let statusFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("CursorClick-\(UUID().uuidString).status")
+        let countdownFile = statusFile.appendingPathExtension("countdown")
         let duration = Double(max(10, min(pauseMilliseconds, 60_000))) / 1000
         let limit = continuous ? 0 : max(1, min(count, 1000))
         let input = Pipe()
@@ -39,11 +47,14 @@ final class Clicker: ObservableObject {
         process.terminationHandler = { [weak self] finished in
             let status = try? String(contentsOf: statusFile, encoding: .utf8)
             try? FileManager.default.removeItem(at: statusFile)
+            try? FileManager.default.removeItem(at: countdownFile)
             Task { @MainActor in
                 guard let self, self.helper === finished else { return }
+                self.hideCountdown()
                 self.helper = nil
                 self.stopHandle = nil
                 self.running = false
+                self.needsAccessibility = finished.terminationStatus == EX_NOPERM || !CGPreflightPostEventAccess()
                 self.message = status ?? (finished.terminationStatus == 0 ? "Stopped." : "The clicker could not run.")
             }
         }
@@ -52,16 +63,96 @@ final class Clicker: ObservableObject {
             helper = process
             stopHandle = input.fileHandleForWriting
             running = true
-            message = "Move the pointer over the target within 5 seconds. Control-C stops."
+            message = "Move the pointer over the target window."
+            countdownTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    if let progress = try? String(contentsOf: countdownFile, encoding: .utf8),
+                       let seconds = Int(progress), seconds != self.countdown {
+                        if seconds == 0 {
+                            self.hideCountdown()
+                            self.message = "Use Control-C or Stop clicking to stop."
+                            return
+                        }
+                        self.countdown = seconds
+                        self.countdownPanel.show(seconds)
+                    }
+                    try? await Task.sleep(for: .milliseconds(80))
+                }
+            }
         } catch {
             message = "Could not start clicker. \(error.localizedDescription)"
         }
     }
 
     func stop() {
+        hideCountdown()
         try? stopHandle?.close()
         stopHandle = nil
         message = "Stopping…"
+    }
+
+    private func hideCountdown() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        countdown = nil
+        countdownPanel.hide()
+    }
+}
+
+@MainActor
+private final class CountdownPanel {
+    private var panel: NSPanel?
+    private var badge: NSHostingView<CountdownBadge>?
+
+    func show(_ seconds: Int) {
+        if let badge {
+            badge.rootView = CountdownBadge(seconds: seconds)
+            return
+        }
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+            ?? NSScreen.main else { return }
+        let size = NSSize(width: 220, height: 62)
+        let rect = NSRect(x: screen.visibleFrame.midX - size.width / 2,
+                          y: screen.visibleFrame.maxY - size.height - 16,
+                          width: size.width, height: size.height)
+        let panel = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        let badge = NSHostingView(rootView: CountdownBadge(seconds: seconds))
+        badge.setFrameSize(size)
+        panel.contentView = badge
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        self.panel = panel
+        self.badge = badge
+        panel.orderFrontRegardless()
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+        panel = nil
+        badge = nil
+    }
+}
+
+private struct CountdownBadge: View {
+    let seconds: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "cursorarrow.click")
+            Text("Clicking in \(seconds)s")
+                .monospacedDigit()
+        }
+        .font(.system(size: 20, weight: .semibold))
+        .foregroundStyle(Color(red: 0.65, green: 0.98, blue: 0.79))
+        .frame(width: 220, height: 62)
+        .background(Color(red: 0.06, green: 0.14, blue: 0.12), in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -71,7 +162,8 @@ struct ClickerView: View {
     private let panel = Color(red: 0.11, green: 0.15, blue: 0.14)
 
     private var runStatus: String {
-        clicker.running ? "Running" : "Ready"
+        if let seconds = clicker.countdown { return "Starting in \(seconds)s" }
+        return clicker.running ? "Running" : "Ready"
     }
 
     var body: some View {
@@ -142,6 +234,11 @@ struct ClickerView: View {
             }
             .foregroundStyle(.secondary)
             .font(.system(size: 12))
+
+            if clicker.needsAccessibility,
+               let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                Link("Open Accessibility Settings", destination: settingsURL)
+            }
 
             Button {
                 if clicker.running { clicker.stop() } else { clicker.start() }

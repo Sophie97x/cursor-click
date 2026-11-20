@@ -12,6 +12,10 @@ func runClickerHelper(_ args: [String]) {
     let pressLetters = args[4] == "1"
     let gatePath = args[5]
     let statusURL = URL(fileURLWithPath: args[6])
+    let countdownURL = statusURL.appendingPathExtension("countdown")
+    @Sendable func reportCountdown(_ second: Int) {
+        try? String(second).write(to: countdownURL, atomically: true, encoding: .utf8)
+    }
     @Sendable func reportStop(_ reason: String) {
         print(reason)
         try? reason.write(to: statusURL, atomically: true, encoding: .utf8)
@@ -22,7 +26,7 @@ func runClickerHelper(_ args: [String]) {
 
     guard CGPreflightPostEventAccess() else {
         reportStop("Allow Cursor Click in System Settings → Privacy & Security → Accessibility.")
-        exit(1)
+        exit(EX_NOPERM)
     }
 
     let stopped = DispatchSemaphore(value: 0)
@@ -79,10 +83,12 @@ func runClickerHelper(_ args: [String]) {
         print("Move the pointer over the visible target window. Starting in 5 seconds. Press Control-C to stop.")
         fflush(stdout)
         for second in stride(from: 5, through: 1, by: -1) {
+            reportCountdown(second)
             print("Starting in \(second)s")
             fflush(stdout)
             if stopped.wait(timeout: .now() + 1) == .success { return }
         }
+        reportCountdown(0)
 
         guard let initial = CGEvent(source: nil)?.location,
               let target = windowTarget(at: initial, requireFocus: false) else {
@@ -158,8 +164,8 @@ func runClickerHelper(_ args: [String]) {
                                      mouseCursorPosition: point, mouseButton: .left),
                   let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
                                    mouseCursorPosition: point, mouseButton: .left) else {
-                fputs("Could not create mouse events.\n", stderr)
-                exit(1)
+                reportStop("Stopped: could not create mouse events.")
+                return
             }
             guard stillOnTarget(point) else {
                 guard waitForTarget() else { return }
@@ -190,8 +196,8 @@ func runClickerHelper(_ args: [String]) {
                     if stopped.wait(timeout: .now()) == .success { return }
                     guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
                           let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false) else {
-                        fputs("Could not create keyboard events.\n", stderr)
-                        exit(1)
+                        reportStop("Stopped: could not create keyboard events.")
+                        return
                     }
                     guard stillOnTarget() else {
                         guard waitForTarget() else { return }
@@ -208,7 +214,7 @@ func runClickerHelper(_ args: [String]) {
             if limit > 0 && completed >= limit { break }
             nextDelay = vary ? interval * Double.random(in: 0.85...1.15) : interval
         }
-        print("Stopped after \(completed) clicks.")
+        reportStop("Stopped after \(completed) clicks.")
     }
 
     DispatchQueue.global(qos: .utility).async {
