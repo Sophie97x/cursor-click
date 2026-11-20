@@ -23,7 +23,7 @@ for size in 16 32 128 256 512; do
     sips -z "$((size * 2))" "$((size * 2))" assets/icon.png \
         --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
-iconutil -c icns "$iconset" -o "$resources/CursorClick.icns"
+iconutil -c icns "$iconset" -o "$resources/AppIcon.icns"
 xcrun swiftc -O -parse-as-library macOS/*.swift -o "$app/Contents/MacOS/CursorClick"
 ditto --noextattr --norsrc "$app" "$stage/signed/Cursor Click.app"
 app="$stage/signed/Cursor Click.app"
