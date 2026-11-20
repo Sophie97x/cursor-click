@@ -23,6 +23,6 @@ You'll need Node.js and the Xcode Command Line Tools. From the repo folder, run:
 open "dist/Cursor Click.app"
 ```
 
-Try the built-in test page first. To use the auto clicker, give Terminal Accessibility permission, click **Start clicking**, and move the pointer over the target window during the countdown. **Control-C** stops it.
+Try the built-in test page first. To use the auto clicker, give Cursor Click Accessibility permission, click **Start clicking**, and move the pointer over the target window during the countdown. **Control-C** or **Stop clicking** stops it.
 
 Cursor Click is macOS-only for now. [MIT License](LICENSE).
